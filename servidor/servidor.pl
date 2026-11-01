@@ -10,7 +10,7 @@
 %     Para detenerlo: http_stop_server(8080, []).
 %     Despues: halt.
 %
-%  12 endpoints:
+%  14 endpoints de API:
 %     1.  /asignar_academia      (ranking y dictamen para academias)
 %     2.  /asignar_cuerpo        (ranking y dictamen para cuerpos academicos)
 %     3.  /asignar_proyecto      (ranking y dictamen para proyectos)
@@ -23,6 +23,8 @@
 %     10. /proyectos             (listado de proyectos)
 %     11. /cursos                (listado de cursos)
 %     12. /capacitaciones        (listado de cursos de capacitacion)
+%     13. /api/asignaciones      (asignaciones persistidas de un profesor)
+%     14. /api/asignar           (registro persistente mediante POST)
 % =====================================================================
 
 :- use_module(library(http/http_server)).
@@ -34,9 +36,10 @@
 
 % Carga de la base de conocimiento (relativa a la carpeta del servidor)
 :- consult('../baseconocimiento/base_conocimiento.pl').
+:- consult('../asignaciones.pl').
 
 % ---------------------------------------------------------------------
-%  DECLARACION DE LOS 12 ENDPOINTS
+%  DECLARACION DE LAS RUTAS HTTP
 % ---------------------------------------------------------------------
 :- http_handler(root(.),             home_page,                []).
 :- http_handler(root(home),           home_page,                []).
@@ -52,13 +55,16 @@
 :- http_handler(root(proyectos),            h_proyectos,            []).   % 10
 :- http_handler(root(cursos),               h_cursos,               []).   % 11
 :- http_handler(root(capacitaciones),       h_capacitaciones,       []).   % 12
+:- http_handler(root('api/asignaciones'),   api_asignaciones,       []).   % 13
+:- http_handler(root('api/asignar'),        api_registrar_asignacion, [method(post)]). % 14
 
 % Iniciar el servidor al cargar este archivo.
 :- initialization(iniciar_servidor).
 
 iniciar_servidor :-
+    iniciar_asignaciones,
     http_server([port(8080)]),
-    format('Servidor activo en http://localhost:8080/home (12 endpoints)~n').
+    format('Servidor activo en http://localhost:8080/home (14 endpoints de API)~n').
 
 % ---------------------------------------------------------------------
 % PAGINA DE INICIO
@@ -78,6 +84,8 @@ home_page(_Request) :-
                 li(a(href('/proyectos'), 'Consultar proyectos')),
                 li(a(href('/cursos'), 'Consultar cursos')),
                 li(a(href('/capacitaciones'), 'Consultar capacitaciones')),
+                li(a(href('/api/asignaciones?empleado=1001'),
+                     'Consultar asignaciones del profesor 1001')),
                 li(a(href('/profesor?empleado=1001'),
                      'Consultar perfil del profesor 1001')),
                 li(a(href('/mejor_profesor_curso?curso=prog1'),
@@ -96,6 +104,15 @@ parametros(Request, Especificacion) :-
 
 responder_error(Mensaje, Status) :-
     reply_json(_{error: Mensaje}, [status(Status)]).
+
+json_atom(Value, Atom) :-
+    (   string(Value)
+    ->  atom_string(Atom, Value)
+    ;   atom(Value)
+    ->  Atom = Value
+    ;   integer(Value)
+    ->  atom_number(Atom, Value)
+    ).
 
 % Construye el JSON de un candidato de academia
 candidato_academia_json(Emp, Aca, Dict) :-
@@ -162,7 +179,8 @@ responder_asignar_academia(Aca, NombreAca, OptEmp) :-
     ->  puntaje_academia(OptEmp, Aca, Puntos, Motivos),
         reply_json(_{empleado: OptEmp, academia: Aca, apto: true,
                      puntaje: Puntos, motivos: Motivos})
-    ;   responder_error('No apto: supera el limite de carga academica actual', 404)
+    ;   motivo_no_apto_academia(OptEmp, Aca, [Motivo]),
+        responder_error(Motivo, 404)
     ).
 
 % =====================================================================
@@ -197,7 +215,7 @@ responder_asignar_cuerpo(Cuerpo, NombreCuerpo, Linea, Estatus, OptEmp) :-
     ->  puntaje_cuerpo(OptEmp, Cuerpo, Puntos, Motivos),
         reply_json(_{empleado: OptEmp, cuerpo: Cuerpo, apto: true,
                      puntaje: Puntos, motivos: Motivos})
-    ;   motivo_no_apto_cuerpo(OptEmp, Motivos),
+    ;   motivo_no_apto_cuerpo(OptEmp, Cuerpo, Motivos),
         reply_json(_{empleado: OptEmp, cuerpo: Cuerpo, apto: false,
                      puntaje: 0, motivos: Motivos})
     ).
@@ -347,6 +365,10 @@ responder_perfil(Emp, Nombre, Grado, Esp, Estudios, Acreditaciones,
              proyecto(IdP, NomP, _, _, _, _, IniP, FinP)), JProyectos),
     findall(_{id: IdM, nombre: NomM},
             (member(IdM, CursosImpartir), curso(IdM, _, NomM, _, _)), JCursosImpartir),
+    findall(_{id: IdCap, nombre: NomCap},
+            (asignacion_persistida(Emp, capacitacion, IdCap),
+             capacitacion(IdCap, NomCap, _, _, _, _)),
+            JCapacitacionesAsignadas),
     reply_json(_{empleado: Emp, nombre: Nombre, grado: Grado, especialidad: Esp,
                  estudios: JEstudios,
                  acreditaciones_vigentes: JAcreditaciones,
@@ -355,7 +377,8 @@ responder_perfil(Emp, Nombre, Grado, Esp, Estudios, Acreditaciones,
                  asignaciones: _{academias: JAcademias,
                                  cuerpos_academicos: JCuerpos,
                                  proyectos: JProyectos,
-                                 cursos_a_impartir: JCursosImpartir}}).
+                                 cursos_a_impartir: JCursosImpartir,
+                                 capacitaciones: JCapacitacionesAsignadas}}).
 
 % =====================================================================
 %  ENDPOINTS 7-12: LISTADOS DE APOYO
@@ -380,7 +403,7 @@ h_academias(_) :-
               total_miembros: N, miembros: Miembros},
             ( academia(Id, Nom, Materias, Lider),
               num_miembros_academia(Id, N),
-              findall(E, miembro_academia(E, Id), Miembros) ),
+              findall(E, miembro_academia_actual(E, Id), Miembros) ),
             Lista),
     length(Lista, Total),
     reply_json(_{total: Total, academias: Lista}).
@@ -391,7 +414,7 @@ h_cuerpos(_) :-
               lider: Lider, estatus: Estatus, total_miembros: N, miembros: Miembros},
             ( cuerpo_academico(Id, Nom, Linea, Lider, Estatus),
               num_miembros_cuerpo(Id, N),
-              findall(E, miembro_cuerpo(E, Id), Miembros) ),
+              findall(E, miembro_cuerpo_actual(E, Id), Miembros) ),
             Lista),
     length(Lista, Total),
     reply_json(_{total: Total, cuerpos_academicos: Lista}).
@@ -401,7 +424,8 @@ h_proyectos(_) :-
     findall(_{id: Id, nombre: Nom, objetivo: Objetivo, entregables: Entregables,
               lider: Lider, integrantes: Integrantes,
               fecha_inicio: Inicio, fecha_entrega: Entrega, estado: Estado},
-            ( proyecto(Id, Nom, Objetivo, Entregables, Lider, Integrantes, Inicio, Entrega),
+            ( proyecto(Id, Nom, Objetivo, Entregables, Lider, _, Inicio, Entrega),
+              integrantes_proyecto_actual(Id, Integrantes),
               estado_proyecto(Inicio, Entrega, Estado) ),
             Lista),
     length(Lista, Total),
@@ -427,3 +451,64 @@ h_capacitaciones(_) :-
             Lista),
     length(Lista, Total),
     reply_json(_{total: Total, capacitaciones: Lista}).
+
+% 13. /api/asignaciones?empleado=1001
+api_asignaciones(Request) :-
+    (   parametros(Request, [empleado(Empleado, [atom])])
+    ->  (   profesor_existe(Empleado)
+        ->  findall(_{tipo: Tipo, id_destino: Id},
+                    asignaciones_profesor(Empleado, Tipo, Id),
+                    Asignaciones),
+            reply_json(_{empleado: Empleado, asignaciones: Asignaciones})
+        ;   responder_error('Profesor no existente', 404)
+        )
+    ;   responder_error('Falta el parametro empleado', 400)
+    ).
+
+% 14. /api/asignar (POST JSON)
+api_registrar_asignacion(Request) :-
+    http_read_json_dict(Request, Datos),
+    (   get_dict(empleado, Datos, EmpleadoValor),
+        json_atom(EmpleadoValor, Empleado),
+        get_dict(tipo, Datos, TipoValor),
+        json_atom(TipoValor, Tipo),
+        get_dict(id_destino, Datos, IdValor),
+        json_atom(IdValor, Id)
+    ->  responder_registro_asignacion(Empleado, Tipo, Id)
+    ;   responder_error(
+            'Datos invalidos. Se requieren empleado, tipo e id_destino.',
+            400
+        )
+    ).
+
+responder_registro_asignacion(Empleado, Tipo, Id) :-
+    (   \+ profesor_existe(Empleado)
+    ->  responder_error('Profesor no existente', 404)
+    ;   \+ destino_existe(Tipo, Id)
+    ->  responder_error('Destino no existente', 404)
+    ;   asignacion_existente(Empleado, Tipo, Id)
+    ->  responder_error('La asignacion ya existe', 409)
+    ;   \+ compatible(Empleado, Tipo, Id)
+    ->  responder_error(
+            'El profesor no cumple los criterios de compatibilidad para el destino',
+            400
+        )
+    ;   registrar_asignacion(Empleado, Tipo, Id)
+    ->  reply_json(
+            _{
+                mensaje: 'Asignacion registrada correctamente',
+                empleado: Empleado,
+                tipo: Tipo,
+                id_destino: Id
+            },
+            [status(201)]
+        )
+    ;   asignacion_existente(Empleado, Tipo, Id)
+    ->  responder_error('La asignacion ya existe', 409)
+    ;   \+ compatible(Empleado, Tipo, Id)
+    ->  responder_error(
+            'El profesor no cumple los criterios de compatibilidad para el destino',
+            400
+        )
+    ;   responder_error('No se pudo persistir la asignacion', 500)
+    ).
