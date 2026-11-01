@@ -6,7 +6,9 @@
 %
 %  Ejecucion:
 %     swipl servidor.pl
-%     ?- iniciar_servidor(8080).
+%     El servidor inicia automaticamente en el puerto 8080.
+%     Para detenerlo: http_stop_server(8080, []).
+%     Despues: halt.
 %
 %  12 endpoints:
 %     1.  /asignar_academia      (ranking y dictamen para academias)
@@ -23,11 +25,12 @@
 %     12. /capacitaciones        (listado de cursos de capacitacion)
 % =====================================================================
 
-:- use_module(library(http/thread_httpd)).
+:- use_module(library(http/http_server)).
 :- use_module(library(http/http_dispatch)).
 :- use_module(library(http/http_json)).
 :- use_module(library(http/http_parameters)).
 :- use_module(library(http/json)).
+:- use_module(library(http/html_write)).
 
 % Carga de la base de conocimiento (relativa a la carpeta del servidor)
 :- consult('../baseconocimiento/base_conocimiento.pl').
@@ -35,6 +38,8 @@
 % ---------------------------------------------------------------------
 %  DECLARACION DE LOS 12 ENDPOINTS
 % ---------------------------------------------------------------------
+:- http_handler(root(.),             home_page,                []).
+:- http_handler(root(home),           home_page,                []).
 :- http_handler(root(asignar_academia),     h_asignar_academia,     []).   % 1
 :- http_handler(root(asignar_cuerpo),       h_asignar_cuerpo,       []).   % 2
 :- http_handler(root(asignar_proyecto),     h_asignar_proyecto,     []).   % 3
@@ -48,10 +53,38 @@
 :- http_handler(root(cursos),               h_cursos,               []).   % 11
 :- http_handler(root(capacitaciones),       h_capacitaciones,       []).   % 12
 
-% Iniciar servidor
-iniciar_servidor(Puerto) :-
-    http_server(http_dispatch, [port(Puerto)]),
-    format('Servidor activo en el puerto ~d (12 endpoints)~n', [Puerto]).
+% Iniciar el servidor al cargar este archivo.
+:- initialization(iniciar_servidor).
+
+iniciar_servidor :-
+    http_server([port(8080)]),
+    format('Servidor activo en http://localhost:8080/home (12 endpoints)~n').
+
+% ---------------------------------------------------------------------
+% PAGINA DE INICIO
+% ---------------------------------------------------------------------
+
+home_page(_Request) :-
+    reply_html_page(
+        title('Sistema experto de asignacion de profesores'),
+        [
+            h1('Sistema experto de asignacion de profesores'),
+            p('Facultad de Ciencias de la Informacion - UNACAR'),
+            h2('Consultas y recomendaciones'),
+            ul([
+                li(a(href('/profesores'), 'Consultar profesores')),
+                li(a(href('/academias'), 'Consultar academias')),
+                li(a(href('/cuerpos'), 'Consultar cuerpos academicos')),
+                li(a(href('/proyectos'), 'Consultar proyectos')),
+                li(a(href('/cursos'), 'Consultar cursos')),
+                li(a(href('/capacitaciones'), 'Consultar capacitaciones')),
+                li(a(href('/profesor?empleado=1001'),
+                     'Consultar perfil del profesor 1001')),
+                li(a(href('/mejor_profesor_curso?curso=prog1'),
+                     'Consultar recomendacion para Programacion I'))
+            ])
+        ]
+    ).
 
 % ---------------------------------------------------------------------
 %  HELPERS GENERALES

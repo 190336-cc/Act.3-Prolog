@@ -26,16 +26,23 @@ asignacion_profesores_unacar/
 2. Inicia SWI-Prolog cargando el archivo del servidor:
 
    ```bash
-   swipl servidor.pl
+   swipl -s servidor.pl
    ```
 
-3. En la consola interactiva de Prolog (`?-`), levanta el servidor web:
+   El servidor inicia automaticamente en el puerto `8080`; no es necesario
+   ejecutar otro predicado para levantarlo.
 
-   ```prolog
-   ?- iniciar_servidor(8080).
-   ```
+3. Abre `http://localhost:8080/home` en el navegador para ver la pagina inicial,
+   o consulta los endpoints desde el navegador o con `curl`.
 
-4. Ya con el servidor activo, consulta los endpoints desde el navegador o con `curl`.
+Para detener el servidor desde la consola interactiva de Prolog:
+
+```prolog
+?- http_stop_server(8080, []).
+?- halt.
+```
+
+La raiz `http://localhost:8080/` tambien muestra la pagina inicial.
 
 ---
 
