@@ -246,7 +246,7 @@ grado_rango(licenciatura, 1).
 grado_rango(maestria, 2).
 grado_rango(doctorado, 3).
 
-% Grado de posgrado minimo exigido a cuerpos academicos y proyectos
+% Grado de posgrado minimo exigido para cuerpos academicos.
 grado_posgrado(maestria).
 grado_posgrado(doctorado).
 
@@ -294,17 +294,58 @@ limite_academias(2).
 limite_cuerpos(2).
 limite_proyectos(3).
 
-num_academias(E, N)      :- findall(A, miembro_academia(E, A), L), length(L, N).
-num_cuerpos(E, N)        :- findall(C, miembro_cuerpo(E, C), L), length(L, N).
-num_proyectos(E, N)      :- findall(P, miembro_proyecto(E, P), L), length(L, N).
+asignacion_persistida(Empleado, Tipo, Id) :-
+    current_predicate(asignacion_guardada/3),
+    asignacion_guardada(Empleado, Tipo, Id).
+
+miembro_academia_actual(Empleado, Academia) :-
+    miembro_academia(Empleado, Academia).
+miembro_academia_actual(Empleado, Academia) :-
+    asignacion_persistida(Empleado, academia, Academia).
+
+miembro_cuerpo_actual(Empleado, Cuerpo) :-
+    miembro_cuerpo(Empleado, Cuerpo).
+miembro_cuerpo_actual(Empleado, Cuerpo) :-
+    asignacion_persistida(Empleado, cuerpo, Cuerpo).
+
+num_academias(E, N) :-
+    findall(A, miembro_academia_actual(E, A), Lista0),
+    sort(Lista0, Lista),
+    length(Lista, N).
+num_cuerpos(E, N) :-
+    findall(C, miembro_cuerpo_actual(E, C), Lista0),
+    sort(Lista0, Lista),
+    length(Lista, N).
+num_proyectos(E, N) :-
+    findall(P, miembro_proyecto(E, P), Lista0),
+    sort(Lista0, Lista),
+    length(Lista, N).
 
 miembro_proyecto(E, P)   :- proyecto(P, _, _, _, E, _, _, _).
 miembro_proyecto(E, P)   :- proyecto(P, _, _, _, _, Integrantes, _, _), member(E, Integrantes).
+miembro_proyecto(E, P)   :- asignacion_persistida(E, proyecto, P).
 
-num_miembros_academia(A, N)    :- findall(E, miembro_academia(E, A), L), length(L, N).
-num_miembros_cuerpo(C, N)      :- findall(E, miembro_cuerpo(E, C), L), length(L, N).
-num_integrantes_proyecto(P, N) :- proyecto(P, _, _, _, _, Integrantes, _, _), length(Integrantes, N).
+num_miembros_academia(A, N) :-
+    findall(E, miembro_academia_actual(E, A), Lista0),
+    sort(Lista0, Lista),
+    length(Lista, N).
+num_miembros_cuerpo(C, N) :-
+    findall(E, miembro_cuerpo_actual(E, C), Lista0),
+    sort(Lista0, Lista),
+    length(Lista, N).
+num_integrantes_proyecto(P, N) :-
+    proyecto(P, _, _, _, _, Integrantes, _, _),
+    findall(E, asignacion_persistida(E, proyecto, P), Asignados),
+    append(Integrantes, Asignados, Lista0),
+    sort(Lista0, Lista),
+    length(Lista, N).
 num_dominan_curso(C, N)        :- findall(E, domina(E, C, _), L), length(L, N).
+
+integrantes_proyecto_actual(Proyecto, Integrantes) :-
+    proyecto(Proyecto, _, _, _, _, IntegrantesIniciales, _, _),
+    findall(E, asignacion_persistida(E, proyecto, Proyecto), Asignados),
+    append(IntegrantesIniciales, Asignados, Lista),
+    sort(Lista, Integrantes).
 
 % Un profesor tiene la carga completa si ya alcanzo algun limite
 carga_completa(E) :-
@@ -314,13 +355,14 @@ carga_completa(E) :-
 carga_completa(E) :-
     num_proyectos(E, NP), limite_proyectos(LP), NP >= LP.
 
-% Clave de ordenamiento de candidatos (puntaje + desempate por grado)
+% Clave de ordenamiento: puntaje, grado y numero de empleado.
 clave_orden(Puntos, Empleado, Clave) :-
     profesor(Empleado, _, Grado, _),
     grado_rango(Grado, GR),
-    Clave is Puntos * 10 + GR.
+    atom_number(Empleado, NumeroEmpleado),
+    Clave = clave(Puntos, GR, NumeroEmpleado).
 
-% Ordena pares cand(Clave, Puntos, Empleado) de mayor a menor puntaje
+% Ordena pares cand(Clave, Puntos, Empleado) segun los desempates definidos.
 ordenar_candidatos(Pares, Orden) :-
     msort(Pares, Asc),
     reverse(Asc, Orden).
@@ -329,13 +371,15 @@ ordenar_candidatos(Pares, Orden) :-
 %  OPCION 1: ASIGNAR PROFESORES A ACADEMIAS
 % =====================================================================
 
-% Elegibilidad basica: existe el profesor y no tiene la carga completa
+% Elegibilidad: domina una materia de la academia y no tiene carga completa.
 apto_academia(Empleado, Academia) :-
-    academia(Academia, _, _, _),
+    academia(Academia, _, Materias, _),
     profesor(Empleado, _, _, _),
+    once((member(Materia, Materias), domina(Empleado, Materia, _))),
     \+ carga_completa(Empleado).
 
 puntaje_academia(Empleado, Academia, Puntos, Motivos) :-
+    apto_academia(Empleado, Academia),
     academia(Academia, _, Materias, Lider),
     profesor(Empleado, _, _, Esp),
     puntaje_base(Empleado, PB),
@@ -358,6 +402,21 @@ puntaje_academia(Empleado, Academia, Puntos, Motivos) :-
     ;   append(MB, [MD, ME], Motivos)
     ).
 
+% Motivo de no elegibilidad para una academia.
+motivo_no_apto_academia(Empleado, _, ['No apto: profesor inexistente']) :-
+    \+ profesor(Empleado, _, _, _),
+    !.
+motivo_no_apto_academia(_, Academia, ['No apto: academia inexistente']) :-
+    \+ academia(Academia, _, _, _),
+    !.
+motivo_no_apto_academia(Empleado, _, ['No apto: supera el limite de carga academica actual']) :-
+    carga_completa(Empleado),
+    !.
+motivo_no_apto_academia(Empleado, Academia, ['No apto: no domina materias de la academia']) :-
+    academia(Academia, _, Materias, _),
+    \+ (member(Materia, Materias), domina(Empleado, Materia, _)),
+    !.
+
 ranking_academia(Academia, Ranking) :-
     findall(cand(Clave, P, E),
             ( profesor(E, _, _, _),
@@ -371,14 +430,15 @@ ranking_academia(Academia, Ranking) :-
 %  OPCION 2: ASIGNAR PROFESORES A CUERPOS ACADEMICOS
 % =====================================================================
 
-% Elegibilidad: grado de posgrado (maestria o doctorado) y sin carga completa
+% Elegibilidad: cuerpo activo, grado de posgrado y sin carga completa.
 apto_cuerpo(Empleado, Cuerpo) :-
-    cuerpo_academico(Cuerpo, _, _, _, _),
+    cuerpo_academico(Cuerpo, _, _, _, activo),
     profesor(Empleado, _, Grado, _),
     grado_posgrado(Grado),
     \+ carga_completa(Empleado).
 
 puntaje_cuerpo(Empleado, Cuerpo, Puntos, Motivos) :-
+    apto_cuerpo(Empleado, Cuerpo),
     cuerpo_academico(Cuerpo, _, Linea, Lider, _),
     profesor(Empleado, _, _, Esp),
     puntaje_base(Empleado, PB),
@@ -408,14 +468,38 @@ ranking_cuerpo(Cuerpo, Ranking) :-
             Pares),
     ordenar_candidatos(Pares, Ranking).
 
-% Motivo de no elegibilidad para un cuerpo academico
+% Motivo de no elegibilidad para un profesor y un cuerpo academico.
+motivo_no_apto_cuerpo(Empleado, _, ['No apto: profesor inexistente']) :-
+    \+ profesor(Empleado, _, _, _),
+    !.
+motivo_no_apto_cuerpo(_, Cuerpo, ['No apto: cuerpo academico inexistente']) :-
+    \+ cuerpo_academico(Cuerpo, _, _, _, _),
+    !.
+motivo_no_apto_cuerpo(_, Cuerpo, ['No apto: el cuerpo academico no esta activo']) :-
+    cuerpo_academico(Cuerpo, _, _, _, Estatus),
+    Estatus \== activo,
+    !.
+motivo_no_apto_cuerpo(Empleado, Cuerpo, ['No apto: supera el limite de carga academica actual']) :-
+    cuerpo_academico(Cuerpo, _, _, _, activo),
+    profesor(Empleado, _, Grado, _),
+    grado_posgrado(Grado),
+    carga_completa(Empleado),
+    !.
+motivo_no_apto_cuerpo(Empleado, _, Motivos) :-
+    motivo_no_apto_cuerpo(Empleado, Motivos).
+
+% Motivo de no elegibilidad independiente del cuerpo consultado.
+motivo_no_apto_cuerpo(Empleado, Motivos) :-
+    \+ profesor(Empleado, _, _, _),
+    !,
+    Motivos = ['No apto: profesor inexistente'].
 motivo_no_apto_cuerpo(Empleado, Motivos) :-
     profesor(Empleado, _, Grado, _),
     \+ grado_posgrado(Grado),
     !,
     format(atom(M), 'No apto: los cuerpos academicos exigen maestria o doctorado (grado actual: ~w)', [Grado]),
     Motivos = [M].
-motivo_no_apto_cuerpo(_, ['No apto: supera el limite de carga academica actual']).
+motivo_no_apto_cuerpo(_, ['No apto: no cumple los requisitos de elegibilidad o el limite de carga academica']).
 
 % =====================================================================
 %  OPCION 3: ASIGNAR PROFESORES A PROYECTOS
@@ -423,13 +507,13 @@ motivo_no_apto_cuerpo(_, ['No apto: supera el limite de carga academica actual']
 
 % Elegibilidad: no forma ya parte del proyecto y sin carga completa
 apto_proyecto(Empleado, Proyecto) :-
-    proyecto(Proyecto, _, _, _, Lider, Integrantes, _, _),
+    proyecto(Proyecto, _, _, _, _, _, _, _),
     profesor(Empleado, _, _, _),
-    Empleado \== Lider,
-    \+ member(Empleado, Integrantes),
+    \+ miembro_proyecto(Empleado, Proyecto),
     \+ carga_completa(Empleado).
 
 puntaje_proyecto(Empleado, Proyecto, Puntos, Motivos) :-
+    apto_proyecto(Empleado, Proyecto),
     tema_proyecto(Proyecto, Tema),
     profesor(Empleado, _, Grado, Esp),
     puntaje_base(Empleado, PB),
@@ -468,7 +552,7 @@ motivo_no_apto_proyecto(Empleado, Proyecto, Motivos) :-
     ->  Motivos = ['No apto: profesor inexistente']
     ;   (   proyecto(Proyecto, _, _, _, Empleado, _, _, _)
         ->  Motivos = ['No apto: actualmente es el lider de este proyecto']
-        ;   (   proyecto(Proyecto, _, _, _, _, Integrantes, _, _), member(Empleado, Integrantes)
+        ;   (   miembro_proyecto(Empleado, Proyecto)
             ->  Motivos = ['No apto: actualmente ya forma parte de este proyecto']
             ;   Motivos = ['No apto: supera el limite de carga academica actual']
             )
@@ -494,19 +578,19 @@ puntos_grado_impartir(doctorado, 15).
 
 apto_curso(Empleado, Curso) :-
     curso(Curso, _, _, _, _),
-    profesor(Empleado, _, _, _).
+    profesor(Empleado, _, _, _),
+    domina(Empleado, Curso, _).
 
 puntaje_curso(Empleado, Curso, Puntos, Motivos) :-
+    apto_curso(Empleado, Curso),
     curso(Curso, _, _, _, Academia),
     profesor(Empleado, _, Grado, Esp),
     puntaje_base(Empleado, PB),
     motivos_base(Empleado, MB),
-    (   domina(Empleado, Curso, Pos)
-    ->  puntos_posicion(Pos, PD),
-        format(atom(MD), 'Tiene el curso en su lista de dominio (posicion ~w) (+~w)', [Pos, PD])
-    ;   PD = 0, MD = 'No tiene el curso en su lista de dominio (+0)'
-    ),
-    (   miembro_academia(Empleado, Academia)
+    domina(Empleado, Curso, Pos),
+    puntos_posicion(Pos, PD),
+    format(atom(MD), 'Tiene el curso en su lista de dominio (posicion ~w) (+~w)', [Pos, PD]),
+    (   miembro_academia_actual(Empleado, Academia)
     ->  PA = 10, MA = 'Pertenece a la academia del curso (+10)'
     ;   PA = 0, MA = 'No pertenece a la academia del curso (+0)'
     ),
@@ -552,6 +636,7 @@ apto_capacitacion(Empleado, Capacitacion) :-
 domina_bien(E, C) :- domina(E, C, Pos), Pos =< 2.
 
 puntaje_capacitacion(Empleado, Cap, Puntos, Motivos) :-
+    apto_capacitacion(Empleado, Cap),
     capacitacion(Cap, _, _, Horas, _, _),
     profesor(Empleado, _, _, Esp),
     puntaje_base(Empleado, PB),
@@ -591,6 +676,7 @@ ranking_capacitacion(Capacitacion, Ranking) :-
 % Rol del profesor dentro de un proyecto
 rol_proyecto(E, P, lider)     :- proyecto(P, _, _, _, E, _, _, _).
 rol_proyecto(E, P, integrante) :- proyecto(P, _, _, _, _, Integrantes, _, _), member(E, Integrantes).
+rol_proyecto(E, P, integrante) :- asignacion_persistida(E, proyecto, P).
 
 % Reporte integral del profesor
 perfil_profesor(Empleado, Perfil) :-
@@ -606,12 +692,15 @@ perfil_profesor(Empleado, Perfil) :-
             Capacitaciones),
     findall(dom(IdC, Pos), domina(Empleado, IdC, Pos), Dominios0),
     msort(Dominios0, Dominios),
-    findall(A, miembro_academia(Empleado, A), Academias),
-    findall(C, miembro_cuerpo(Empleado, C), Cuerpos),
+    findall(A, miembro_academia_actual(Empleado, A), Academias0),
+    sort(Academias0, Academias),
+    findall(C, miembro_cuerpo_actual(Empleado, C), Cuerpos0),
+    sort(Cuerpos0, Cuerpos),
     findall(P - rol(Rol), rol_proyecto(Empleado, P, Rol), Proyectos),
-    findall(C, (miembro_academia(Empleado, A),
-                academia(A, _, Materias, _),
-                member(C, Materias)),
+    findall(C, ((miembro_academia_actual(Empleado, A),
+                 academia(A, _, Materias, _),
+                 member(C, Materias))
+                ; asignacion_persistida(Empleado, curso, C)),
             Cursos0),
     sort(Cursos0, CursosImpartir),
     Perfil = perfil(Nombre, Grado, Esp, Estudios, Acreditaciones,
